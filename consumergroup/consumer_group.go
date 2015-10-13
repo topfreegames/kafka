@@ -24,6 +24,8 @@ type Config struct {
 		ProcessingTimeout time.Duration // Time to wait for all the offsets for a partition to be processed after stopping to consume from it. Defaults to 1 minute.
 		CommitInterval    time.Duration // The interval between which the prossed offsets are commited.
 	}
+
+	EnableOffsetAutoCommit bool // Enable offset auto commit.
 }
 
 func NewConfig() *Config {
@@ -33,8 +35,9 @@ func NewConfig() *Config {
 	config.Offsets.Initial = sarama.OffsetOldest
 	config.Offsets.ProcessingTimeout = 60 * time.Second
 	config.Offsets.CommitInterval = 10 * time.Second
+	config.EnableOffsetAutoCommit = true
 
-	return config
+	return config	
 }
 
 func (cgc *Config) Validate() error {
@@ -154,7 +157,6 @@ func JoinConsumerGroup(name string, topics []string, zookeeper []string, config 
 			return nil, err
 		}
 	}
-
 	// Register itself with zookeeper
 	if err := cg.instance.Register(topics); err != nil {
 		cg.Logf("FAILED to register consumer instance: %s!\n", err)
@@ -163,12 +165,23 @@ func JoinConsumerGroup(name string, topics []string, zookeeper []string, config 
 		cg.Logf("Consumer instance registered (%s).", cg.instance.ID)
 	}
 
-	offsetConfig := OffsetManagerConfig{CommitInterval: config.Offsets.CommitInterval}
+	offsetConfig := OffsetManagerConfig{
+		CommitInterval: config.Offsets.CommitInterval,
+		EnableAutoCommit: config.EnableOffsetAutoCommit,
+	}
 	cg.offsetManager = NewZookeeperOffsetManager(cg, &offsetConfig)
 
 	go cg.topicListConsumer(topics)
 
 	return
+}
+
+func (cg *ConsumerGroup) GetNextOffset(topic string, partition int32) (int64, error) {
+	return cg.offsetManager.GetNextOffset(topic, partition)
+}
+
+func (cg *ConsumerGroup) Partitions(kafkaTopic string) (kazoo.PartitionList, error) {
+	return cg.kazoo.Topic(kafkaTopic).Partitions()
 }
 
 // Returns a channel that you can read to obtain events from Kafka to process.
@@ -229,6 +242,11 @@ func (cg *ConsumerGroup) Logf(format string, args ...interface{}) {
 
 func (cg *ConsumerGroup) InstanceRegistered() (bool, error) {
 	return cg.instance.Registered()
+}
+
+func (cg *ConsumerGroup) ForceOffsetCommit() error {
+	cg.offsetManager.CommitOffsets()
+	return nil
 }
 
 func (cg *ConsumerGroup) CommitUpto(message *sarama.ConsumerMessage) error {
@@ -346,6 +364,7 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
 	defer cg.instance.ReleasePartition(topic, partition)
 
 	nextOffset, err := cg.offsetManager.InitializePartition(topic, partition)
+
 	if err != nil {
 		cg.Logf("%s/%d :: FAILED to determine initial offset: %s\n", topic, partition, err)
 		return

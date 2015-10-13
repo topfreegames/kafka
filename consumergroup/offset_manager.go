@@ -16,6 +16,12 @@ type OffsetManager interface {
 	// consumer group due to other consumer instances coming online and offline.
 	InitializePartition(topic string, partition int32) (int64, error)
 
+	// Get next offset.
+	GetNextOffset(topic string, partition int32) (int64, error)
+	
+	// Force offsetManager to commit all messages already stored.
+	CommitOffsets() error
+	
 	// MarkAsProcessed tells the offset manager than a certain message has been successfully
 	// processed by the consumer, and should be committed. The implementation does not have
 	// to store this offset right away, but should return true if it intends to do this at
@@ -49,6 +55,7 @@ var (
 type OffsetManagerConfig struct {
 	CommitInterval time.Duration // Interval between offset flushes to the backend store.
 	VerboseLogging bool          // Whether to enable verbose logging.
+	EnableAutoCommit bool        // Whether to enable auto commit.
 }
 
 // NewOffsetManagerConfig returns a new OffsetManagerConfig with sane defaults.
@@ -96,7 +103,9 @@ func NewZookeeperOffsetManager(cg *ConsumerGroup, config *OffsetManagerConfig) O
 		closed:  make(chan struct{}),
 	}
 
-	go zom.offsetCommitter()
+	if config.EnableAutoCommit {
+		go zom.offsetCommitter()
+	}
 
 	return zom
 }
@@ -145,6 +154,16 @@ func (zom *zookeeperOffsetManager) FinalizePartition(topic string, partition int
 	delete(zom.offsets[topic], partition)
 	zom.l.Unlock()
 
+	return nil
+}
+
+func (zom *zookeeperOffsetManager) GetNextOffset(topic string, partition int32) (int64, error) {
+
+	return zom.cg.group.FetchOffset(topic, partition)
+}
+
+func (zom *zookeeperOffsetManager) CommitOffsets() error {
+	zom.commitOffsets()
 	return nil
 }
 
