@@ -176,7 +176,16 @@ func JoinConsumerGroup(name string, topics []string, zookeeper []string, config 
 	return
 }
 
-func (cg *ConsumerGroup) GetNextOffset(topic string, partition int32) (int64, error) {
+func (cg *ConsumerGroup) GetNewestOffset(topic string, partition int32, brokers []string) (int64, error) {
+	client, err := sarama.NewClient(brokers, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Close()
+	return client.GetOffset(topic, partition, sarama.OffsetNewest)
+}
+
+func (cg *ConsumerGroup) GetOldestOffset(topic string, partition int32) (int64, error) {
 	return cg.offsetManager.GetNextOffset(topic, partition)
 }
 
