@@ -178,38 +178,7 @@ func (cg *ConsumerGroup) GetNewestOffset(topic string, partition int32, brokers 
 func (cg *ConsumerGroup) GetSizeOfAvailableMessages() int {
 	cg.reloadMutex.Lock()
 	defer cg.reloadMutex.Unlock()
-	brokers, err := cg.kazoo.BrokerList()
-	if err != nil {
-		log.Critical("Failed to get list of brokers from zookeeper.")
-		return 0
-	}
-	total := int64(0)
-	for i := range cg.topics {
-		topic := cg.topics[i]
-		partitionsList, err := cg.kazoo.Topic(topic).Partitions()
-		if err != nil {
-			log.Critical("Failed to get list of partitions for topic %s.\n", topic)
-			continue
-		}
-		for j := range partitionsList {
-			partition := partitionsList[j]
-			newestOffset, newestOffsetErr := cg.GetNewestOffset(topic, partition.ID, brokers)
-			oldestOffset, oldestOffsetErr := cg.offsetManager.GetNextOffset(topic, partition.ID)
-			if newestOffsetErr != nil {
-				log.Critical("Failed to get oldest offset for partition %d and topic %s with error %v.\n", partition.ID, topic, newestOffsetErr)
-				continue
-			}
-			if oldestOffsetErr != nil {
-				log.Critical("Failed to get newest offset for partition %d and topic %s with error %v.\n", partition.ID, topic, oldestOffsetErr)
-				continue
-			}
-			if oldestOffset < 0 {
-				oldestOffset = 0
-			}
-			total += newestOffset - oldestOffset
-		}
-	}
-	return int(total)
+	return len(cg.messages)
 }
 
 func (cg *ConsumerGroup) GetBatchOfMessages(batchSize int) []string {
@@ -326,8 +295,7 @@ func (cg *ConsumerGroup) InstanceRegistered() (bool, error) {
 func (cg *ConsumerGroup) CommitOffsets() error {
 	cg.reloadMutex.Lock()
 	defer cg.reloadMutex.Unlock()
-	cg.offsetManager.CommitOffsets()
-	return nil
+	return cg.offsetManager.CommitOffsets()
 }
 
 func (cg *ConsumerGroup) CommitUpto(message *sarama.ConsumerMessage) error {
