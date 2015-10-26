@@ -80,6 +80,7 @@ type ConsumerGroup struct {
 	singleShutdown sync.Once
 
 	reloadMutex sync.Mutex
+	singleReload sync.Once
 	
 	messages chan *sarama.ConsumerMessage
 	errors   chan *sarama.ConsumerError
@@ -236,45 +237,43 @@ func (cg *ConsumerGroup) Closed() bool {
 }
 
 
-func (cg *ConsumerGroup) Reload(stopper chan struct{}) error {
+func (cg *ConsumerGroup) reload() error {
 	cg.reloadMutex.Lock()
 	defer cg.reloadMutex.Unlock()
-	log.Debug("Closing down old connections.")
-	err := cg.Close(stopper)
-	if err != nil {
-		log.Critical("Failed to close consumergroup due to %+v", err)
-		return err
-	}
-	return cg.Load()
+	cg.singleReload.Do(func() {
+		log.Debug("Closing down old connections.")		
+		err := cg.Close()
+		if err != nil {
+			log.Critical("Failed to close consumergroup due to %+v", err)			
+		}
+		cg.Load()
+	})
+	return nil
 }
 
-func (cg *ConsumerGroup) Close(stopper chan struct{}) error {	
+func (cg *ConsumerGroup) Close() error {	
 	shutdownError := AlreadyClosing
 	cg.singleShutdown.Do(func() {
 		defer cg.kazoo.Close()
 
 		shutdownError = nil
-		close(stopper)
+		close(cg.stopper)
 		cg.wg.Wait()
 		if err := cg.offsetManager.Close(); err != nil {
 			log.Critical("FAILED closing the offset manager: %s!\n", err)
 		}
-
 		if shutdownError = cg.instance.Deregister(); shutdownError != nil {
 			log.Warning("FAILED deregistering consumer instance: %s!\n", shutdownError)
 		} else {
 			log.Info("Deregistered consumer instance %s.\n", cg.instance.ID)
 		}
-
 		if shutdownError = cg.consumer.Close(); shutdownError != nil {
 			log.Critical("FAILED closing the Sarama client: %s\n", shutdownError)
 		}
-
 		close(cg.messages)
 		close(cg.errors)
 		cg.instance = nil
 	})
-
 	return shutdownError
 }
 
@@ -334,8 +333,10 @@ func (cg *ConsumerGroup) topicListConsumer(topics []string) {
 
 		case event := <-consumerChanges:
 			if event.Err == zk.ErrSessionExpired {
-				log.Info("Session was expired, reloading consumer.")
-				cg.Reload(stopper)
+				log.Info("Session was expired, reloading consumer.")				
+				go cg.reload()
+				<- cg.stopper
+				close(stopper)
 				return
 			} else {
 				log.Info("Triggering rebalance due to consumer list change\n")
@@ -495,4 +496,5 @@ partitionConsumerLoop:
 	if err = cg.offsetManager.FinalizePartition(topic, partition, lastOffset, cg.config.Offsets.ProcessingTimeout); err != nil {
 		log.Fatal("%s/%d :: %s\n", topic, partition, err)
 	}
+	log.Info("%s/%d :: Successfully stoped partition.", topic, partition)
 }

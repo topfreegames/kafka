@@ -177,8 +177,10 @@ func (zom *zookeeperOffsetManager) MarkAsProcessed(topic string, partition int32
 }
 
 func (zom *zookeeperOffsetManager) Close() error {
-	close(zom.closing)
-	<-zom.closed
+	if zom.config.EnableAutoCommit {
+		close(zom.closing)
+		<-zom.closed
+	}
 
 	zom.l.Lock()
 	defer zom.l.Unlock()
