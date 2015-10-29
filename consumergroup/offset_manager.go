@@ -255,7 +255,7 @@ func (pot *partitionOffsetTracker) markAsProcessed(offset int64) bool {
 	if offset > pot.highestProcessedOffset {
 		pot.highestProcessedOffset = offset
 		if pot.waitingForOffset == pot.highestProcessedOffset {
-			close(pot.done)
+			pot.done <- struct{}{}
 		}
 		return true
 	} else {

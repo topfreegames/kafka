@@ -107,6 +107,7 @@ func JoinConsumerGroup(name string, topics []string, zookeeper []string, config 
 func (cg *ConsumerGroup) Load() error {
 	var kz *kazoo.Kazoo
 	var err error
+	fmt.Printf("zk %+v\n", cg.config.Zookeeper)
 	if kz, err = kazoo.NewKazoo(cg.zookeeper, cg.config.Zookeeper); err != nil {
 		return err
 	}
@@ -117,6 +118,8 @@ func (cg *ConsumerGroup) Load() error {
 		return err
 	}
 
+	fmt.Printf("br %+v\n", brokers)
+	
 	group := kz.Consumergroup(cg.config.ClientID)
 	instance := group.NewInstance()
 
