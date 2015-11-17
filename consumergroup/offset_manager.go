@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	log "github.com/Sirupsen/logrus"
 )
 
 // OffsetManager is the main interface consumergroup requires to manage offsets of the consumergroup.
@@ -140,7 +141,7 @@ func (zom *zookeeperOffsetManager) FinalizePartition(topic string, partition int
 
 	if lastOffset >= 0 {
 		if lastOffset-tracker.highestProcessedOffset > 0 {
-			log.Info("%s/%d :: Last processed offset: %d. Waiting up to %ds for another %d messages to process...", topic, partition, tracker.highestProcessedOffset, timeout/time.Second, lastOffset-tracker.highestProcessedOffset)
+			log.Infof("%s/%d :: Last processed offset: %d. Waiting up to %ds for another %d messages to process...", topic, partition, tracker.highestProcessedOffset, timeout/time.Second, lastOffset-tracker.highestProcessedOffset)
 			if !tracker.waitForOffset(lastOffset, timeout) {
 				return fmt.Errorf("TIMEOUT waiting for offset %d. Last committed offset: %d", lastOffset, tracker.lastCommittedOffset)
 			}
@@ -240,9 +241,9 @@ func (zom *zookeeperOffsetManager) commitOffset(topic string, partition int32, t
 	})
 
 	if err != nil {
-		log.Warning("FAILED to commit offset %d for %s/%d!", tracker.highestProcessedOffset, topic, partition)
+		log.Warnf("FAILED to commit offset %d for %s/%d!", tracker.highestProcessedOffset, topic, partition)
 	} else if zom.config.VerboseLogging {
-		log.Debug("Committed offset %d for %s/%d!", tracker.lastCommittedOffset, topic, partition)
+		log.Debugf("Committed offset %d for %s/%d!", tracker.lastCommittedOffset, topic, partition)
 	}
 
 	return err
