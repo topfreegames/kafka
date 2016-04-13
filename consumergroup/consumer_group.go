@@ -246,7 +246,7 @@ func (cg *ConsumerGroup) reload() error {
 	cg.reloadMutex.Lock()
 	defer cg.reloadMutex.Unlock()
 	cg.singleReload.Do(func() {
-		log.Debugf("Closing down old connections.")		
+		log.Infof("Closing down old connections.")		
 		err := cg.Close()
 		if err != nil {
 			log.Errorf("Failed to close consumergroup due to %+v", err)			
@@ -337,16 +337,18 @@ func (cg *ConsumerGroup) topicListConsumer(topics []string) {
 			return
 
 		case event := <-consumerChanges:
-			if event.Err == zk.ErrSessionExpired {
+			if event.Err == zk.ErrSessionExpired || event.Err == zk.ErrConnectionClosed {
 				log.Infof("Session was expired, reloading consumer.")				
 				go cg.reload()
 				<- cg.stopper
 				close(stopper)
-				return
+				return				
 			} else {
 				log.Infof("Triggering rebalance due to consumer list change\n")
+				go cg.reload()
+				<- cg.stopper
 				close(stopper)
-				cg.wg.Wait()
+				return
 			}
 		}
 	}
