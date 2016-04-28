@@ -39,7 +39,7 @@ type OffsetManager interface {
 	// backend store. It should return an error if it was not able to commit the offset.
 	// Note: it's possible that the consumergroup instance will start to consume the same
 	// partition again after this function is called.
-	FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration) error
+	FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration, replicaId int) error
 
 	// Close is called when the consumergroup is shutting down. In normal circumstances, all
 	// offsets are committed because FinalizePartition is called for all the running partition
@@ -134,21 +134,21 @@ func (zom *zookeeperOffsetManager) InitializePartition(topic string, partition i
 	return nextOffset, nil
 }
 
-func (zom *zookeeperOffsetManager) FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration) error {
+func (zom *zookeeperOffsetManager) FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration, replicaId int) error {
 	zom.l.RLock()
 	tracker := zom.offsets[topic][partition]
 	zom.l.RUnlock()
 
 	if lastOffset >= 0 {
 		if lastOffset-tracker.highestProcessedOffset > 0 {
-			log.Infof("%s/%d :: Last processed offset: %d. Waiting up to %ds for another %d messages to process...", topic, partition, tracker.highestProcessedOffset, timeout/time.Second, lastOffset-tracker.highestProcessedOffset)
+			log.Infof("REP %d - %s/%d :: Last processed offset: %d. Waiting up to %ds for another %d messages to process...", replicaId, topic, partition, tracker.highestProcessedOffset, timeout/time.Second, lastOffset-tracker.highestProcessedOffset)
 			if !tracker.waitForOffset(lastOffset, timeout) {
-				return fmt.Errorf("TIMEOUT waiting for offset %d. Last committed offset: %d", lastOffset, tracker.lastCommittedOffset)
+				return fmt.Errorf("REP %d - TIMEOUT waiting for offset %d. Last committed offset: %d", replicaId, lastOffset, tracker.lastCommittedOffset)
 			}
 		}
 
 		if err := zom.commitOffset(topic, partition, tracker); err != nil {
-			return fmt.Errorf("FAILED to commit offset %d to Zookeeper. Last committed offset: %d", tracker.highestProcessedOffset, tracker.lastCommittedOffset)
+			return fmt.Errorf("REP %d - FAILED to commit offset %d to Zookeeper. Last committed offset: %d",replicaId, tracker.highestProcessedOffset, tracker.lastCommittedOffset)
 		}
 	}
 
