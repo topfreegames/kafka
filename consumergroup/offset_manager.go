@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	log "github.com/Sirupsen/logrus"
+  "github.com/uber-go/zap"
 )
 
 // OffsetManager is the main interface consumergroup requires to manage offsets of the consumergroup.
@@ -19,10 +19,10 @@ type OffsetManager interface {
 
 	// Get next offset.
 	GetNextOffset(topic string, partition int32) (int64, error)
-	
+
 	// Force offsetManager to commit all messages already stored.
-	CommitOffsets() error
-	
+	CommitOffsets(logger zap.Logger) error
+
 	// MarkAsProcessed tells the offset manager than a certain message has been successfully
 	// processed by the consumer, and should be committed. The implementation does not have
 	// to store this offset right away, but should return true if it intends to do this at
@@ -39,7 +39,7 @@ type OffsetManager interface {
 	// backend store. It should return an error if it was not able to commit the offset.
 	// Note: it's possible that the consumergroup instance will start to consume the same
 	// partition again after this function is called.
-	FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration, replicaId int) error
+	FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration, replicaId int, logger zap.Logger) error
 
 	// Close is called when the consumergroup is shutting down. In normal circumstances, all
 	// offsets are committed because FinalizePartition is called for all the running partition
@@ -91,7 +91,7 @@ type zookeeperOffsetManager struct {
 
 // NewZookeeperOffsetManager returns an offset manager that uses Zookeeper
 // to store offsets.
-func NewZookeeperOffsetManager(cg *ConsumerGroup, config *OffsetManagerConfig) OffsetManager {
+func NewZookeeperOffsetManager(cg *ConsumerGroup, config *OffsetManagerConfig, logger zap.Logger) OffsetManager {
 	if config == nil {
 		config = NewOffsetManagerConfig()
 	}
@@ -105,7 +105,7 @@ func NewZookeeperOffsetManager(cg *ConsumerGroup, config *OffsetManagerConfig) O
 	}
 
 	if config.EnableAutoCommit {
-		go zom.offsetCommitter()
+		go zom.offsetCommitter(logger)
 	}
 
 	return zom
@@ -134,20 +134,27 @@ func (zom *zookeeperOffsetManager) InitializePartition(topic string, partition i
 	return nextOffset, nil
 }
 
-func (zom *zookeeperOffsetManager) FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration, replicaId int) error {
+func (zom *zookeeperOffsetManager) FinalizePartition(topic string, partition int32, lastOffset int64, timeout time.Duration, replicaId int, logger zap.Logger) error {
 	zom.l.RLock()
 	tracker := zom.offsets[topic][partition]
 	zom.l.RUnlock()
 
 	if lastOffset >= 0 {
 		if lastOffset-tracker.highestProcessedOffset > 0 {
-			log.Infof("REP %d - %s/%d :: Last processed offset: %d. Waiting up to %ds for another %d messages to process...", replicaId, topic, partition, tracker.highestProcessedOffset, timeout/time.Second, lastOffset-tracker.highestProcessedOffset)
+      logger.Info("ZOOKEEPER: Finalizing partition. Waiting before processing remaining messages",
+        zap.Int("replicaId", replicaId),
+        zap.String("topic", topic),
+        zap.Int("partition", partition),
+        zap.Int("lastProcessedOffset", tracker.highestProcessedOffset),
+        zap.Int("waitingTimeToProcessMoreMessages", timeout/time.Second),
+        zap.Int("numMessagesToProcess", lastOffset-tracker.highestProcessedOffset),
+      )
 			if !tracker.waitForOffset(lastOffset, timeout) {
 				return fmt.Errorf("REP %d - TIMEOUT waiting for offset %d. Last committed offset: %d", replicaId, lastOffset, tracker.lastCommittedOffset)
 			}
 		}
 
-		if err := zom.commitOffset(topic, partition, tracker); err != nil {
+		if err := zom.commitOffset(topic, partition, tracker, logger); err != nil {
 			return fmt.Errorf("REP %d - FAILED to commit offset %d to Zookeeper. Last committed offset: %d",replicaId, tracker.highestProcessedOffset, tracker.lastCommittedOffset)
 		}
 	}
@@ -164,8 +171,8 @@ func (zom *zookeeperOffsetManager) GetNextOffset(topic string, partition int32) 
 	return zom.cg.group.FetchOffset(topic, partition)
 }
 
-func (zom *zookeeperOffsetManager) CommitOffsets() error {
-	return zom.commitOffsets()
+func (zom *zookeeperOffsetManager) CommitOffsets(logger zap.Logger) error {
+	return zom.commitOffsets(logger)
 }
 
 func (zom *zookeeperOffsetManager) MarkAsProcessed(topic string, partition int32, offset int64) bool {
@@ -197,7 +204,7 @@ func (zom *zookeeperOffsetManager) Close() error {
 	return closeError
 }
 
-func (zom *zookeeperOffsetManager) offsetCommitter() {
+func (zom *zookeeperOffsetManager) offsetCommitter(logger zap.Logger) {
 	commitTicker := time.NewTicker(zom.config.CommitInterval)
 	defer commitTicker.Stop()
 
@@ -207,19 +214,19 @@ func (zom *zookeeperOffsetManager) offsetCommitter() {
 			close(zom.closed)
 			return
 		case <-commitTicker.C:
-			zom.commitOffsets()
+			zom.commitOffsets(logger)
 		}
 	}
 }
 
-func (zom *zookeeperOffsetManager) commitOffsets() error {
+func (zom *zookeeperOffsetManager) commitOffsets(logger zap.Logger) error {
 	zom.l.RLock()
 	defer zom.l.RUnlock()
 
 	var returnErr error
 	for topic, partitionOffsets := range zom.offsets {
 		for partition, offsetTracker := range partitionOffsets {
-			err := zom.commitOffset(topic, partition, offsetTracker)
+			err := zom.commitOffset(topic, partition, offsetTracker, logger)
 			switch err {
 			case nil:
 				// noop
@@ -231,7 +238,7 @@ func (zom *zookeeperOffsetManager) commitOffsets() error {
 	return returnErr
 }
 
-func (zom *zookeeperOffsetManager) commitOffset(topic string, partition int32, tracker *partitionOffsetTracker) error {
+func (zom *zookeeperOffsetManager) commitOffset(topic string, partition int32, tracker *partitionOffsetTracker, logger zap.Logger) error {
 	err := tracker.commit(func(offset int64) error {
 		if offset >= 0 {
 			return zom.cg.group.CommitOffset(topic, partition, offset+1)
@@ -241,9 +248,17 @@ func (zom *zookeeperOffsetManager) commitOffset(topic string, partition int32, t
 	})
 
 	if err != nil {
-		log.Warnf("FAILED to commit offset %d for %s/%d!", tracker.highestProcessedOffset, topic, partition)
+    logger.Warn("ZOOKEEPER: FAILED to commit offset",
+      zap.Int("highestProcessedOffset", tracker.highestProcessedOffset),
+      zap.String("topic", topic),
+      zap.Int("partition", partition),
+    )
 	} else if zom.config.VerboseLogging {
-		log.Debugf("Committed offset %d for %s/%d!", tracker.lastCommittedOffset, topic, partition)
+    logger.Debug("ZOOKEEPER: Committed offset",
+      zap.Int("lastCommittedOffset", tracker.lastCommittedOffset),
+      zap.String("topic", topic),
+      zap.Int("partition", partition),
+    )
 	}
 
 	return err
