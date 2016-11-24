@@ -45,11 +45,11 @@ type OffsetManager interface {
 	// offsets are committed because FinalizePartition is called for all the running partition
 	// consumers. You may want to check for this to be true, and try to commit any outstanding
 	// offsets. If this doesn't succeed, it should return an error.
-	Close() error
+	Close(logger zap.Logger) error
 }
 
 var (
-	UncleanClose = errors.New("Not all offsets were committed before shutdown was completed")
+  UncleanClose = errors.New("KAFKA: Not all offsets were committed before shutdown was completed")
 )
 
 // OffsetManagerConfig holds configuration setting son how the offset manager should behave.
@@ -144,10 +144,10 @@ func (zom *zookeeperOffsetManager) FinalizePartition(topic string, partition int
       logger.Info("ZOOKEEPER: Finalizing partition. Waiting before processing remaining messages",
         zap.Int("replicaId", replicaId),
         zap.String("topic", topic),
-        zap.Int("partition", partition),
-        zap.Int("lastProcessedOffset", tracker.highestProcessedOffset),
-        zap.Int("waitingTimeToProcessMoreMessages", timeout/time.Second),
-        zap.Int("numMessagesToProcess", lastOffset-tracker.highestProcessedOffset),
+        zap.Int64("partition", int64(partition)),
+        zap.Int64("lastProcessedOffset", tracker.highestProcessedOffset),
+        zap.Duration("waitingTimeToProcessMoreMessages", timeout/time.Second),
+        zap.Int64("numMessagesToProcess", lastOffset-tracker.highestProcessedOffset),
       )
 			if !tracker.waitForOffset(lastOffset, timeout) {
 				return fmt.Errorf("REP %d - TIMEOUT waiting for offset %d. Last committed offset: %d", replicaId, lastOffset, tracker.lastCommittedOffset)
@@ -185,7 +185,7 @@ func (zom *zookeeperOffsetManager) MarkAsProcessed(topic string, partition int32
 	}
 }
 
-func (zom *zookeeperOffsetManager) Close() error {
+func (zom *zookeeperOffsetManager) Close(logger zap.Logger) error {
 	if zom.config.EnableAutoCommit {
 		close(zom.closing)
 		<-zom.closed
@@ -249,15 +249,15 @@ func (zom *zookeeperOffsetManager) commitOffset(topic string, partition int32, t
 
 	if err != nil {
     logger.Warn("ZOOKEEPER: FAILED to commit offset",
-      zap.Int("highestProcessedOffset", tracker.highestProcessedOffset),
+      zap.Int64("highestProcessedOffset", tracker.highestProcessedOffset),
       zap.String("topic", topic),
-      zap.Int("partition", partition),
+      zap.Int64("partition", int64(partition)),
     )
 	} else if zom.config.VerboseLogging {
     logger.Debug("ZOOKEEPER: Committed offset",
-      zap.Int("lastCommittedOffset", tracker.lastCommittedOffset),
+      zap.Int64("lastCommittedOffset", tracker.lastCommittedOffset),
       zap.String("topic", topic),
-      zap.Int("partition", partition),
+      zap.Int64("partition", int64(partition)),
     )
 	}
 

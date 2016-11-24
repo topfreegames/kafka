@@ -44,15 +44,15 @@ func NewConfig() *Config {
 
 func (cgc *Config) Validate() error {
 	if cgc.Zookeeper.Timeout <= 0 {
-		return sarama.ConfigurationError("ZookeeperTimeout should have a duration > 0")
+    return sarama.ConfigurationError("SARAMA: ZookeeperTimeout should have a duration > 0")
 	}
 
 	if cgc.Offsets.CommitInterval <= 0 {
-		return sarama.ConfigurationError("CommitInterval should have a duration > 0")
+    return sarama.ConfigurationError("SARAMA: CommitInterval should have a duration > 0")
 	}
 
 	if cgc.Offsets.Initial != sarama.OffsetOldest && cgc.Offsets.Initial != sarama.OffsetNewest {
-		return errors.New("Offsets.Initial should be sarama.OffsetOldest or sarama.OffsetNewest.")
+    return errors.New("SARAMA: Offsets.Initial should be sarama.OffsetOldest or sarama.OffsetNewest.")
 	}
 
 	if cgc.Config != nil {
@@ -145,7 +145,7 @@ func (cg *ConsumerGroup) Load(logger zap.Logger) error {
 	if exists, err := cg.group.Exists(); err != nil {
     logger.Fatal("KAFKA: Replica failed to check existence of consumergroup",
       zap.Int("replicaId", cg.replicaId),
-      zap.Object("err", err),
+      zap.Error(err),
     )
 		consumer.Close()
 		kz.Close()
@@ -158,7 +158,7 @@ func (cg *ConsumerGroup) Load(logger zap.Logger) error {
 		if err := cg.group.Create(); err != nil {
       logger.Fatal("KAFKA: Failed to create consumergroup in Zookeeper",
         zap.Int("replicaId", cg.replicaId),
-        zap.Object("err", err),
+        zap.Error( err),
       )
 			consumer.Close()
 			kz.Close()
@@ -169,7 +169,7 @@ func (cg *ConsumerGroup) Load(logger zap.Logger) error {
 	if err := cg.instance.Register(cg.topics); err != nil {
     logger.Fatal("KAFKA: Failed to create consumer instance",
       zap.Int("replicaId", cg.replicaId),
-      zap.Object("err", err),
+      zap.Error(err),
     )
 		return err
 	} else {
@@ -223,10 +223,10 @@ func (cg *ConsumerGroup) GetBatchOfMessages(batchSize int, logger zap.Logger) []
 			if offsets[message.Topic][message.Partition] != 0 && offsets[message.Topic][message.Partition] != message.Offset - 1 {
         logger.Error("KAFKA: Unexpected offset for message topic and partition",
 					zap.String("messageTopic", message.Topic),
-					zap.Int("messagePartition", message.Partition),
-					zap.Int("offsetExpected", offsets[message.Topic][message.Partition] + 1),
-					zap.Int("offsetFound", message.Offset),
-					zap.Int("offsetDifference", message.Offset - offsets[message.Topic][message.Partition] + 1),
+					zap.Int64("messagePartition", int64(message.Partition)),
+					zap.Int64("offsetExpected", offsets[message.Topic][message.Partition] + 1),
+					zap.Int64("offsetFound", message.Offset),
+					zap.Int64("offsetDifference", message.Offset - offsets[message.Topic][message.Partition] + 1),
 				)
 				continue
 			}
@@ -265,19 +265,19 @@ func (cg *ConsumerGroup) reload(logger zap.Logger) error {
     logger.Info("KAFKA: Closing down old connections for replica",
       zap.Int("replicaId", cg.replicaId),
     )
-		err := cg.Close()
+		err := cg.Close(logger)
 		if err != nil {
       logger.Error("KAFKA: Failed to close consumergroup for replica",
         zap.Int("replicaId", cg.replicaId),
-        zap.Object("err", err),
+        zap.Error(err),
       )
 		}
-		cg.Load()
+		cg.Load(logger)
 	})
 	return nil
 }
 
-func (cg *ConsumerGroup) Close() error {
+func (cg *ConsumerGroup) Close(logger zap.Logger) error {
 	shutdownError := AlreadyClosing
 	cg.singleShutdown.Do(func() {
 		defer cg.kazoo.Close()
@@ -285,19 +285,28 @@ func (cg *ConsumerGroup) Close() error {
 		shutdownError = nil
 		close(cg.stopper)
 		cg.wg.Wait()
-		if err := cg.offsetManager.Close(); err != nil {
-      log.Error("KAFKA: FAILED closing the offset manager for replica!",
+		if err := cg.offsetManager.Close(logger); err != nil {
+      logger.Error("KAFKA: FAILED closing the offset manager for replica!",
         zap.Int("replicaId", cg.replicaId),
-        zap.String("err", err),
+        zap.Error(err),
       )
 		}
 		if shutdownError = cg.instance.Deregister(); shutdownError != nil {
-			log.Warnf("REP %d - FAILED deregistering consumer instance: %s!\n", cg.replicaId, shutdownError)
+      logger.Warn("KAFKA: Replica FAILED deregistering consumer instance",
+        zap.Int("replicaId", cg.replicaId),
+        zap.Error(shutdownError),
+      )
 		} else {
-			log.Infof("REP %d - Deregistered consumer instance %s.\n", cg.replicaId, cg.instance.ID)
+      logger.Info("KAFKA: Replica deregistered consumer instance",
+        zap.Int("replicaId", cg.replicaId),
+        zap.String("instanceId", cg.instance.ID),
+      )
 		}
 		if shutdownError = cg.consumer.Close(); shutdownError != nil {
-			log.Errorf("REP %d - FAILED closing the Sarama client: %s\n", cg.replicaId, shutdownError)
+			logger.Error("Replica FAILED closing the Sarama client",
+        zap.Int("replicaId", cg.replicaId),
+        zap.Error(shutdownError),
+      )
 		}
 		close(cg.messages)
 		close(cg.errors)
@@ -343,7 +352,7 @@ func (cg *ConsumerGroup) topicListConsumer(topics []string, logger zap.Logger) {
 		if err != nil {
       logger.Fatal("KAFKA: FAILED to get list of registered consumer instances for replica",
         zap.Int("replicaId", cg.replicaId),
-        zap.String("err", err),
+        zap.Error(err),
       )
 			return
 		}
@@ -376,8 +385,8 @@ func (cg *ConsumerGroup) topicListConsumer(topics []string, logger zap.Logger) {
 				close(stopper)
 				return
 			} else {
-        log.Infof("KAFKA: Triggering rebalance due to consumer list change in replica",
-          zap.Int("replicaId", cd.replicaId),
+        logger.Info("KAFKA: Triggering rebalance due to consumer list change in replica",
+          zap.Int("replicaId", cg.replicaId),
         )
 				close(stopper)
 				cg.wg.Wait()
@@ -406,7 +415,7 @@ func (cg *ConsumerGroup) topicConsumer(topic string, messages chan<- *sarama.Con
     logger.Fatal("KAFKA: Replica FAILED to get list of partitions for topic",
       zap.Int("replicaId", cg.replicaId),
       zap.String("topic", topic),
-      zap.String("err", err),
+      zap.Error(err),
     )
 		cg.errors <- &sarama.ConsumerError{
 			Topic:     topic,
@@ -421,7 +430,7 @@ func (cg *ConsumerGroup) topicConsumer(topic string, messages chan<- *sarama.Con
     logger.Fatal("KAFKA: Replica FAILED to get leaders of partitions for topic",
       zap.Int("replicaId", cg.replicaId),
       zap.String("topic", topic),
-      zap.String("err", err),
+      zap.Error(err),
     )
 		cg.errors <- &sarama.ConsumerError{
 			Topic:     topic,
@@ -477,8 +486,8 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
       logger.Warn("KAFKA: Replica FAILED to claim partition",
         zap.Int("replicaId", cg.replicaId),
         zap.String("topic", topic),
-        zap.Int("partition", partition),
-        zap.String("err", err),
+        zap.Int64("partition", int64(partition)),
+        zap.Error(err),
       )
 			return
 		}
@@ -491,8 +500,8 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
     logger.Error("KAFKA: Replica FAILED to determine initial offset",
       zap.Int("replicaId", cg.replicaId),
       zap.String("topic", topic),
-      zap.Int("partition", partition),
-      zap.String("err", err),
+      zap.Int64("partition", int64(partition)),
+      zap.Error(err),
     )
 		return
 	}
@@ -501,8 +510,8 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
     logger.Info("KAFKA: Replica partition consumer starting at offset",
       zap.Int("replicaId", cg.replicaId),
       zap.String("topic", topic),
-      zap.Int("partition", partition),
-      zap.Int("nextOffset", nextOffset),
+      zap.Int64("partition", int64(partition)),
+      zap.Int64("nextOffset", nextOffset),
     )
 	} else {
 		nextOffset = cg.config.Offsets.Initial
@@ -510,13 +519,13 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
       logger.Info("KAFKA: Replica partition consumer starting at the oldest available offset",
         zap.Int("replicaId", cg.replicaId),
         zap.String("topic", topic),
-        zap.Int("partition", partition),
+        zap.Int64("partition", int64(partition)),
       )
 		} else if nextOffset == sarama.OffsetNewest {
       logger.Info("KAFKA: Replica partition consumer listening for new messages only",
         zap.Int("replicaId", cg.replicaId),
         zap.String("topic", topic),
-        zap.Int("partition", partition),
+        zap.Int64("partition", int64(partition)),
       )
 		}
 	}
@@ -526,7 +535,7 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
     logger.Warn("KAFKA: Replica partition consumer offset out of Range",
       zap.Int("replicaId", cg.replicaId),
       zap.String("topic", topic),
-      zap.Int("partition", partition),
+      zap.Int64("partition", int64(partition)),
     )
 		// if the offset is out of range, simplistically decide whether to use OffsetNewest or OffsetOldest
 		// if the configuration specified offsetOldest, then switch to the oldest available offset, else
@@ -536,14 +545,14 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
       logger.Info("KAFKA: Replica partition consumer offset reset to oldest available offset",
         zap.Int("replicaId", cg.replicaId),
         zap.String("topic", topic),
-        zap.Int("partition", partition),
+        zap.Int64("partition", int64(partition)),
       )
 		} else {
 			nextOffset = sarama.OffsetNewest
       logger.Info("KAFKA: Replica partition consumer offset reset to newest available offset",
         zap.Int("replicaId", cg.replicaId),
         zap.String("topic", topic),
-        zap.Int("partition", partition),
+        zap.Int64("partition", int64(partition)),
       )
 		}
 		// retry the consumePartition with the adjusted offset
@@ -553,8 +562,8 @@ func (cg *ConsumerGroup) partitionConsumer(topic string, partition int32, messag
     logger.Fatal("KAFKA: Replica FAILED to start partition consumer",
       zap.Int("replicaId", cg.replicaId),
       zap.String("topic", topic),
-      zap.Int("partition", partition),
-      zap.String("err", err),
+      zap.Int64("partition", int64(partition)),
+      zap.Error(err),
     )
 		return
 	}
@@ -596,20 +605,20 @@ partitionConsumerLoop:
   logger.Info("KAFKA: Replica is stopping partition consumer at offset",
     zap.Int("replicaId", cg.replicaId),
     zap.String("topic", topic),
-    zap.Int("partition", partition),
-    zap.Int("lastOffset", lastOffset),
+    zap.Int64("partition", int64(partition)),
+    zap.Int64("lastOffset", lastOffset),
   )
 	if err = cg.offsetManager.FinalizePartition(topic, partition, lastOffset, cg.config.Offsets.ProcessingTimeout, cg.replicaId, logger); err != nil {
     logger.Fatal("KAFKA: Replica error trying to stop partition consumer",
       zap.Int("replicaId", cg.replicaId),
       zap.String("topic", topic),
-      zap.Int("partition", partition),
-      zap.String("err", err),
+      zap.Int64("partition", int64(partition)),
+      zap.Error(err),
     )
 	}
   logger.Info("KAFKA: Replica successfully stoped partition",
     zap.Int("replicaId", cg.replicaId),
     zap.String("topic", topic),
-    zap.Int("partition", partition),
+    zap.Int64("partition", int64(partition)),
   )
 }
